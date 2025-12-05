@@ -82,39 +82,36 @@ def has_file_extension(url: str, extensions: Set[str]) -> bool:
 
 
 def url_to_file_path(url: str, site_code: str, output_dir: str) -> str:
-    """Преобразует URL в путь к файлу с древовидной структурой."""
+    """Преобразует URL в путь к файлу в одной папке."""
+    import hashlib
+    
+    # Создаем уникальное имя файла на основе URL
+    url_hash = hashlib.md5(url.encode('utf-8')).hexdigest()[:12]
     parsed = urlparse(url)
     path = parsed.path.strip('/')
-    query = parsed.query
-    base_dir = os.path.join(output_dir, site_code)
     
-    if not path or path == '/':
-        dir_path = base_dir
-        file_name = 'index.md'
-    else:
+    # Берем последнюю часть пути для имени файла
+    if path and path != '/':
         path_parts = [p for p in path.split('/') if p]
-        safe_parts = [re.sub(r'[<>:"|?*\\]', '_', p) for p in path_parts if p]
-        
-        if not safe_parts:
-            dir_path = base_dir
-            file_name = 'index.md'
-        else:
-            if query:
-                query_normalized = re.sub(r'[<>:"|?*\\]', '_', query.replace('=', '_').replace('&', '_')[:50])
-                file_name = f"{safe_parts[-1]}_{query_normalized}.md"
-                dir_parts = safe_parts[:-1]
+        if path_parts:
+            base_name = path_parts[-1]
+            # Убираем расширения и небезопасные символы
+            base_name = re.sub(r'[<>:"|?*\\]', '_', base_name)
+            if '.' in base_name:
+                base_name = base_name.rsplit('.', 1)[0]
+            if base_name:
+                file_name = f"{site_code}_{base_name}_{url_hash}.md"
             else:
-                if '.' in safe_parts[-1] and len(safe_parts[-1].split('.')[-1]) <= 4:
-                    file_name = safe_parts[-1].replace('.', '_') + '.md'
-                    dir_parts = safe_parts[:-1]
-                else:
-                    file_name = 'index.md'
-                    dir_parts = safe_parts
-            
-            dir_path = os.path.join(base_dir, *dir_parts) if dir_parts else base_dir
+                file_name = f"{site_code}_{url_hash}.md"
+        else:
+            file_name = f"{site_code}_index_{url_hash}.md"
+    else:
+        file_name = f"{site_code}_index_{url_hash}.md"
     
-    os.makedirs(dir_path, exist_ok=True)
-    return os.path.join(dir_path, file_name)
+    # Все файлы в одну папку
+    base_dir = os.path.join(output_dir, site_code)
+    os.makedirs(base_dir, exist_ok=True)
+    return os.path.join(base_dir, file_name)
 
 
 def print_stats(stats: dict, base_url: str, max_pages: int) -> None:
@@ -189,8 +186,8 @@ class SiteCrawler:
         markdown_generator = DefaultMarkdownGenerator(content_filter=content_filter)
         
         crawler_config = CrawlerRunConfig(
-            cache_mode=CacheMode.ENABLED,
-            markdown_generator=markdown_generator,
+        cache_mode=CacheMode.ENABLED,
+        markdown_generator=markdown_generator,
             exclude_external_links=True,
             delay_before_return_html=2.5,
             mean_delay=4.0,
@@ -203,6 +200,48 @@ class SiteCrawler:
         )
         
         return browser_config, crawler_config
+    
+    def _extract_title(self, result) -> str:
+        """Извлекает заголовок страницы из результата."""
+        # Пробуем разные способы получить заголовок
+        if hasattr(result, 'metadata') and result.metadata:
+            if isinstance(result.metadata, dict):
+                title = result.metadata.get('title') or result.metadata.get('og:title')
+                if title:
+                    return title.strip()
+        
+        # Пробуем извлечь из HTML
+        if hasattr(result, 'html') and result.html:
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(result.html, 'html.parser')
+                title_tag = soup.find('title')
+                if title_tag:
+                    return title_tag.get_text().strip()
+            except Exception:
+                pass
+        
+        # Пробуем из markdown (если там есть заголовок)
+        if hasattr(result, 'markdown'):
+            markdown = None
+            if hasattr(result.markdown, 'fit_markdown') and result.markdown.fit_markdown:
+                markdown = result.markdown.fit_markdown
+            elif hasattr(result.markdown, 'raw_markdown') and result.markdown.raw_markdown:
+                markdown = result.markdown.raw_markdown
+            elif isinstance(result.markdown, str):
+                markdown = result.markdown
+            
+            if markdown:
+                # Ищем первый заголовок в markdown
+                lines = markdown.split('\n')
+                for line in lines[:10]:  # Проверяем первые 10 строк
+                    line = line.strip()
+                    if line.startswith('# '):
+                        return line[2:].strip()
+                    elif line.startswith('## '):
+                        return line[3:].strip()
+        
+        return "Без заголовка"
     
     def _extract_markdown(self, result) -> Optional[str]:
         """Извлекает markdown контент из результата."""
@@ -291,10 +330,23 @@ class SiteCrawler:
                 self._record_error(url, "404 Not Found")
                 return
             
+            # Извлекаем заголовок страницы
+            page_title = self._extract_title(result)
+            self.logger.debug(f"Заголовок страницы: {page_title}")
+            
+            # Формируем содержимое файла с URL и заголовком в начале
+            file_content = f"""---
+URL: {normalized_url}
+Заголовок: {page_title}
+---
+
+{markdown_content}
+"""
+            
             file_path = url_to_file_path(url, self.site_code, self.output_dir)
             with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(markdown_content)
-            
+                f.write(file_content)
+                        
             self.stats['success'] += 1
             self.stats['saved_files'].append(file_path)
             self.logger.info(f"OK {url} -> {file_path}")

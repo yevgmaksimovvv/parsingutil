@@ -46,22 +46,31 @@ python crawler.py -u https://mysite.com -s mysite -m 50
 
 ## Формат выходных файлов
 
-Файлы сохраняются в древовидной структуре, отражающей структуру URL:
+Все файлы сохраняются в одну папку с уникальными именами:
 
 ```
 output/
   <site-code>/
-    index.md                    # Главная страница
-    about/
-      index.md                  # /about/
-    articles/
-      item.php_id_123.md        # /articles/item.php?id=123
+    <site-code>_index_<hash>.md
+    <site-code>_about_<hash>.md
+    <site-code>_article_<hash>.md
 ```
 
-Примеры:
-- `https://example.com/` → `output/example/index.md`
-- `https://example.com/about/` → `output/example/about/index.md`
-- `https://example.com/articles/123` → `output/example/articles/123.md`
+Каждый файл начинается с метаданных (URL и заголовок):
+
+```markdown
+---
+URL: https://example.com/about
+Заголовок: О нас
+---
+
+[Содержимое страницы в markdown...]
+```
+
+Имена файлов формируются на основе:
+- Префикс `site-code`
+- Последняя часть пути URL
+- Хеш URL для уникальности
 
 ## Логирование
 
